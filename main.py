@@ -18,7 +18,7 @@ API_ID = 36933179
 API_HASH = "94abd4974e7058f3e5eac4efa27c91fa"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8333367228:AAH5VMN3AA__UtF8yASa4KCaMDVSrDFVb2w")
 USER_ID = int(os.getenv("USER_ID", "636315061"))
-SESSION_NAME = "kyiv_alert_session"
+kyiv_alert_session.session
 
 # Канали для моніторингу
 CHANNELS = ["tryvoga_chomu", "war_monitor"]
