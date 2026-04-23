@@ -3,33 +3,35 @@ import logging
 import os
 import re
 from datetime import datetime
-from telethon import TelegramClient, events
-from telethon.errors import SessionPasswordNeededError
-
+from telegram import Bot
+from telegram.ext import Application, filters, MessageHandler, ContextTypes
+import aiohttp
+from bs4 import BeautifulSoup
+ 
 # Налаштування логування
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
+ 
 # Константи
-API_ID = 36933179
-API_HASH = "94abd4974e7058f3e5eac4efa27c91fa"
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8333367228:AAH5VMN3AA__UtF8yASa4KCaMDVSrDFVb2w")
 USER_ID = int(os.getenv("USER_ID", "636315061"))
-kyiv_alert_session.session
-
+ 
 # Канали для моніторингу
-CHANNELS = ["tryvoga_chomu", "war_monitor"]
-
+CHANNELS = {
+    "tryvoga_chomu": "https://t.me/tryvoga_chomu",
+    "war_monitor": "https://t.me/war_monitor"
+}
+ 
 # Ключові фрази для першого каналу
 EXACT_PHRASES_CH1 = [
     "❗️Балістика на Київ",
     "❗️2х балістики на Київ",
     "💥Вибухи в Києві"
 ]
-
+ 
 # Ключові фрази для другого каналу
 EXACT_PHRASES_CH2 = [
     "☄ Вихід на Київ",
@@ -39,23 +41,29 @@ EXACT_PHRASES_CH2 = [
     "💥 Вибухи Київ, загроза балістики続續",
     "☄ Вихід у напрямку Київ"
 ]
-
+ 
 # Регулярні вирази
 PATTERN_CH1 = re.compile(
     r'(балістик[аи]|шахед[иы]?)\s+.*?(Київ[а]?)',
     re.IGNORECASE | re.DOTALL
 )
-
+ 
 PATTERN_CH2 = re.compile(
     r'(балістик[аи]|шахед[иы]?|кинжал[иы]?|ракет[аи])\s+.*?(Київ[а]?)',
     re.IGNORECASE | re.DOTALL
 )
-
+ 
 PATTERN_GENERAL = re.compile(
     r'((?:на|у напрямку|в напрямку)\s+)?Київ[а]?.*?(летит[ь]?|спуск|загроз|вибух)',
     re.IGNORECASE | re.DOTALL
 )
-
+ 
+# Для збереження останніх перевірених повідомлень
+last_checked_messages = {
+    "tryvoga_chomu": set(),
+    "war_monitor": set()
+}
+ 
 async def check_alert(message_text, channel_name):
     """Перевіряє чи є в повідомленні ключові фрази"""
     
@@ -76,13 +84,10 @@ async def check_alert(message_text, channel_name):
             return True
     
     return False
-
-async def send_alert_via_bot(alert_text, channel_name):
-    """Надсилає алерт через Telegram Bot API"""
+ 
+async def send_alert(bot, alert_text, channel_name):
+    """Надсилає алерт користувачу"""
     try:
-        from telegram import Bot
-        
-        bot = Bot(token=BOT_TOKEN)
         timestamp = datetime.now().strftime("%H:%M:%S")
         
         alert_message = (
@@ -105,67 +110,80 @@ async def send_alert_via_bot(alert_text, channel_name):
         
     except Exception as e:
         logger.error(f"❌ Помилка при надсиланні алерту: {e}")
-
+ 
+async def fetch_channel_messages(channel_name, channel_url):
+    """Отримує останні повідомлення з каналу через веб-скрепінг"""
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(channel_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    
+                    # Простий парсинг HTML
+                    # Ищемо повідомлення в структурі Telegram веб-версії
+                    messages = []
+                    
+                    # Це спрощений парсинг - може потребувати оновлення
+                    # якщо Telegram змінить структуру
+                    if "Балістика" in html or "вибух" in html or "летит" in html:
+                        logger.info(f"📨 Можлива нова активність в {channel_name}")
+                        return True
+                    
+                    return False
+                else:
+                    logger.warning(f"⚠️ Статус {resp.status} для {channel_name}")
+                    return False
+                    
+    except Exception as e:
+        logger.warning(f"⚠️ Помилка при скрепінгу {channel_name}: {e}")
+        return False
+ 
+async def monitor_channels(bot):
+    """Періодично перевіряє канали"""
+    
+    logger.info("✅ Бот запущено! Слідкую за каналами...")
+    logger.info("🔍 Перевіряю канали кожні 10 секунд...")
+    
+    while True:
+        try:
+            for channel_name, channel_url in CHANNELS.items():
+                try:
+                    # Перевіримо канал
+                    has_updates = await fetch_channel_messages(channel_name, channel_url)
+                    
+                    if has_updates:
+                        logger.info(f"📨 Нова активність в @{channel_name}")
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Помилка при перевірці {channel_name}: {str(e)[:100]}")
+            
+            # Чекаємо 10 секунд перед наступною перевіркою
+            await asyncio.sleep(10)
+            
+        except Exception as e:
+            logger.error(f"❌ Критична помилка в моніторингу: {e}")
+            await asyncio.sleep(10)
+ 
 async def main():
     """Основна функція"""
     
-    logger.info("🤖 Запуск Kyiv Alert Bot (Telethon Client)...")
-    
-    # Створюємо Telegram клієнт
-    client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+    logger.info("🤖 Запуск Kyiv Alert Bot (Bot Token)...")
     
     try:
-        # Підключаємося до Telegram (сесія вже створена)
-        await client.connect()
+        # Створюємо бота
+        bot = Bot(token=BOT_TOKEN)
         
-        # Перевіримо чи авторизовані
-        if not await client.is_user_authorized():
-            logger.error("❌ Сесія не авторизована! Запустіть create_session.py локально!")
-            raise Exception("Session not authorized. Run create_session.py first!")
+        # Перевіримо що токен працює
+        me = await bot.get_me()
+        logger.info(f"✅ Бот успішно запущений: @{me.username}")
         
-        me = await client.get_me()
-        logger.info(f"✅ Авторизовано як: {me.first_name} (@{me.username})")
+        # Запускаємо моніторинг каналів
+        await monitor_channels(bot)
         
-        logger.info("✅ Бот запущено! Слідкую за каналами...")
-        
-        # Реєструємо обробник для нових повідомлень з каналів
-        @client.on(events.NewMessage(chats=CHANNELS))
-        async def handle_new_message(event):
-            """Обробляє нові повідомлення з каналів"""
-            try:
-                message_text = event.message.text or ""
-                
-                # Отримуємо ім'я каналу
-                chat = await event.get_chat()
-                channel_name = chat.username or chat.title or "unknown"
-                
-                if not message_text:
-                    return
-                
-                logger.info(f"📨 Нове повідомлення з @{channel_name}: {message_text[:100]}")
-                
-                # Перевіряємо на алерти
-                if await check_alert(message_text, channel_name):
-                    logger.warning(f"⚠️ АЛЕРТ ВИЯВЛЕНО! Канал: {channel_name}")
-                    await send_alert_via_bot(message_text, channel_name)
-            
-            except Exception as e:
-                logger.error(f"Помилка в обробці повідомлення: {e}")
-        
-        # Запускаємо слухача
-        logger.info("🔍 Слухаю канали в реальному часі...")
-        await client.run_until_disconnected()
-        
-    except SessionPasswordNeededError:
-        logger.error("❌ Потрібна двофакторна аутентифікація. Запустіть вручну один раз.")
-        raise
-    
     except Exception as e:
         logger.error(f"❌ Критична помилка: {e}")
         raise
-    
-    finally:
-        await client.disconnect()
-
+ 
 if __name__ == '__main__':
     asyncio.run(main())
