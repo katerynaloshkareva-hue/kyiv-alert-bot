@@ -115,8 +115,14 @@ async def main():
     client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
     
     try:
-        # Підключаємося до Telegram
-        await client.start()
+        # Підключаємося до Telegram (сесія вже створена)
+        await client.connect()
+        
+        # Перевіримо чи авторизовані
+        if not await client.is_user_authorized():
+            logger.error("❌ Сесія не авторизована! Запустіть create_session.py локально!")
+            raise Exception("Session not authorized. Run create_session.py first!")
+        
         me = await client.get_me()
         logger.info(f"✅ Авторизовано як: {me.first_name} (@{me.username})")
         
